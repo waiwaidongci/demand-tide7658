@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from src.config.database import Base,engine
 from src.config.queue import queue
+from src.config.migrations import ensure_schema
 from src import models
 from src.routes import auth,series,runs,releases,audits,stats
 from src.middlewares.request_guard import RequestGuard
@@ -11,6 +12,7 @@ from src.middlewares.error_handler import ErrorHandler
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    ensure_schema()
     if os.getenv('SEED_DEMO','true').lower()=='true':
         try:
             from scripts.seed_demo import seed

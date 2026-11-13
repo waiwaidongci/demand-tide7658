@@ -31,6 +31,19 @@ docker compose exec -T backend python -m scripts.seed_demo
 7. 计划负责人用 admin 记录发布说明并确认，发布档案保留运行关联。
 8. 配送联络员用 viewer 阅读并下载带口径说明的预测 CSV。
 
+## 修订报表批量导入
+
+供应方补发修订日报时，在「序列台账」页使用批量导入面板：选择 CSV 文件或直接粘贴文本（表头支持 `day/date/日期`、`value/demand/需求量`，可选 `report_version/version/报表版本`，无版本列按 0 处理），先「逐行预览」再「确认导入」。
+
+口径（`backend/src/services/import_service.py`）：
+
+- 每个 (序列, 日期) 只保留 `report_version` 最高的一条观测；高版本更正覆盖旧值，旧版重放不回退数值。
+- 同 (日期, 版本) 异值（文件内或与台账冲突）整组**冲突隔离**并说明原因；日期、数值、版本无法解析的行作为**坏行隔离**；好行仍正常入库。
+- 文件内同键同值重复仅首行参与；与台账同版同值按重复提交跳过。每次响应返回输入总数与新增/更正/跳过/冲突/坏行计数，满足 `总数 = 新增 + 更正 + 跳过 + 冲突 + 坏行`，页面顶部与批次记录均可核对。
+- 提交携带客户端生成的幂等键 `idem_key`：重复或并发导入同批不新增观测，直接返回首批的逐行处置结果；数据库保留 `(series_id, day)` 唯一约束作为「每个日期物理一行」的硬不变量，配合行锁与自然键冲突调和（失败插入不会变成覆盖），任何并发同日写入都不会产生重复观测。
+- 无版本历史观测（v0）可被首个带版本观测升级，升级后继续可用于预测；预测计算时实时读取观测表，更正自动进入后续预测，历史运行结果不回改。
+- 接口：`POST /series/{id}/imports/preview` 预览、`POST /series/{id}/imports` 提交、`GET /series/{id}/imports[/{batchId}]` 批次台账与逐行结果。
+
 ## 计算口径
 
 `backend/src/services/forecast_algorithm.py` 是独立可复算 Python 算法。输入为连续日需求非负有限序列、horizon 1–30、season 2–30。至少 42 天且不少于 3 个季节。固定种子 42..47 的 seed 生成 6 条、每条 180 天的观测，合计 1080 条。
@@ -56,6 +69,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 `.env.example` 列出端口、MySQL 用户/密码、JWT_SECRET 和 SEED_DEMO。`.env` 被忽略。所列密码是可公开的本地合成演示密码，外部部署应通过环境变量替换。`SEED_DEMO=true` 启动插入不存在的自然键，不覆盖修改；失败记日志不阻塞接口。种子可以重复执行。
 
 后端本地：Python 3.11，安装 requirements.txt，配置 DATABASE_URL/REDIS_URL 后 `uvicorn src.main:app --reload`。前端本地：`npm install && npm run dev`，Vite /api 代理到 19203。所有计算、校验及持久化均在后端。请求有 Redis 每分钟限流、全局错误处理、JWT 8 小时失效与写操作审计。
+
+导入逻辑测试不依赖外部服务：`python3 backend/tests/test_import_logic.py` 以内存替身覆盖解析、版本合并、冲突隔离、幂等重放与并发调和（纯规则 70 项断言）；`backend/tests/test_import_integration.py` 用真实 SQLAlchemy/SQLite 跑通模型约束、导入服务、单行版本化录入与预测读取（35 项断言，需 `pip install -r backend/requirements.txt` 后以 `PYTHONPATH` 指向依赖运行）。
 
 五个 Compose 服务各有 healthcheck：frontend、backend、worker、db、redis。DB/Redis/产物为命名卷；worker 仅本地心跳健康不代表任务成功，任务成功需查看持久化状态。演示 worker 用 Redis BLPOP，处理中进程崩溃的任务暂无自动重投，须重新创建并在结果页确认。
 
